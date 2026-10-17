@@ -146,6 +146,8 @@
     font: inherit; color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
   }
+  .form-err { margin: 0; color: var(--danger); font-size: 13px; min-height: 1em; }
+  .form-err:empty { display: none; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 
   @media (max-width: 560px) {
@@ -166,14 +168,14 @@
     </div>
     <div class="head-actions">
       <button id="themeBtn" class="icon-btn" title="Toggle light/dark" aria-label="Toggle light or dark theme">◐</button>
-      <button id="editBtn" aria-pressed="false">✎ Edit</button>
+      <button id="editBtn" aria-pressed="false">🔒 Admin</button>
     </div>
   </div>
 </header>
 
 <main class="wrap" id="main">
   <div class="edit-bar">
-    <span>Edit mode: changes are saved in this browser only.</span>
+    <span>Admin mode: changes are saved for everyone.</span>
     <button id="addBtn" class="primary">+ Add app</button>
     <button id="resetBtn" class="danger">Reset to defaults</button>
   </div>
@@ -203,9 +205,21 @@
   </form>
 </dialog>
 
+<dialog id="loginDlg">
+  <form method="dialog" id="loginForm">
+    <h2>Admin login</h2>
+    <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+    <p id="loginErr" class="form-err" role="alert"></p>
+    <div class="dialog-actions">
+      <button type="button" id="loginCancel">Cancel</button>
+      <button type="submit" class="primary">Log in</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
-  const STORE_KEY = 'lvc-app-hub-v3';
   const THEME_KEY = 'lvc-app-hub-theme';
+  const ADMIN_KEY = 'lvc-app-hub-admin';
 
   const SAMPLE = [
     { id: 'claim', name: 'Claim Form', url: 'https://claim-production-a3c4.up.railway.app/',
@@ -216,19 +230,59 @@
 
   const load = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   const save = (key, val) => { try { localStorage.setItem(key, val); } catch {} };
-  const drop = (key) => { try { localStorage.removeItem(key); } catch {} };
 
-  let apps;
-  try { apps = JSON.parse(load(STORE_KEY)) || structuredClone(SAMPLE); }
-  catch { apps = structuredClone(SAMPLE); }
-  if (!Array.isArray(apps)) apps = structuredClone(SAMPLE);
+  // The admin password lives only in this tab's sessionStorage and is sent with each change.
+  const getPw = () => { try { return sessionStorage.getItem(ADMIN_KEY) || ''; } catch { return ''; } };
+  const setPw = (pw) => { try { pw ? sessionStorage.setItem(ADMIN_KEY, pw) : sessionStorage.removeItem(ADMIN_KEY); } catch {} };
+  let password = getPw();
 
+  let apps = structuredClone(SAMPLE);
   let filter = 'All';
   let query = '';
   let editingId = null;
 
   const $ = (s) => document.querySelector(s);
-  const persist = () => save(STORE_KEY, JSON.stringify(apps));
+
+  async function api(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: {
+        ...(body !== undefined && { 'Content-Type': 'application/json' }),
+        ...(password && { Authorization: 'Bearer ' + password }),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || 'Request failed (' + res.status + ')'), { status: res.status });
+    return data;
+  }
+
+  async function loadApps() {
+    try {
+      const data = await api('GET', '/api/apps');
+      if (Array.isArray(data.apps)) apps = data.apps;
+    } catch {} // offline or opened as a local file: show the defaults
+    render();
+  }
+
+  // Saves a new list to the server; the page only changes once the server accepts it.
+  async function persist(next) {
+    try {
+      const data = await api(next === null ? 'DELETE' : 'PUT', '/api/apps', next ?? undefined);
+      apps = Array.isArray(data.apps) ? data.apps : structuredClone(SAMPLE);
+      render();
+    } catch (err) {
+      if (err.status === 401) setAdmin(false);
+      alert('Could not save: ' + err.message);
+    }
+  }
+
+  function setAdmin(on) {
+    if (!on) { password = ''; setPw(''); }
+    document.body.classList.toggle('editing', on);
+    $('#editBtn').setAttribute('aria-pressed', on);
+    $('#editBtn').textContent = on ? '✓ Done' : '🔒 Admin';
+  }
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const host = (u) => { try { return new URL(u).host; } catch { return u; } };
   const initials = (n) => n.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
@@ -248,7 +302,7 @@
       (!q || [a.name, a.desc, a.category, a.url].join(' ').toLowerCase().includes(q)));
 
     if (!shown.length) {
-      $('#list').innerHTML = `<p class="empty">${apps.length ? 'No apps match your search.' : 'No apps yet. Use Edit → Add app.'}</p>`;
+      $('#list').innerHTML = `<p class="empty">${apps.length ? 'No apps match your search.' : 'No apps yet.'}</p>`;
       return;
     }
 
@@ -297,13 +351,10 @@
       category: f.category.value.trim() || 'Other',
       desc: f.desc.value.trim(),
     };
-    if (editingId) {
-      Object.assign(apps.find(a => a.id === editingId), data);
-    } else {
-      apps.push({ id: Date.now().toString(36), ...data });
-    }
-    persist();
-    render();
+    const next = editingId
+      ? apps.map(a => a.id === editingId ? { ...a, ...data } : a)
+      : [...apps, { id: Date.now().toString(36), ...data }];
+    persist(next);
   });
   $('#cancelBtn').addEventListener('click', () => $('#dlg').close());
 
@@ -313,10 +364,8 @@
     if (ed) openDialog(apps.find(a => a.id === ed.dataset.edit));
     if (del) {
       const app = apps.find(a => a.id === del.dataset.del);
-      if (confirm(`Remove "${app.name}" from the hub?`)) {
-        apps = apps.filter(a => a !== app);
-        persist();
-        render();
+      if (confirm(`Remove "${app.name}" from the hub for everyone?`)) {
+        persist(apps.filter(a => a !== app));
       }
     }
   });
@@ -328,17 +377,29 @@
   $('#search').addEventListener('input', (e) => { query = e.target.value.trim(); render(); });
 
   $('#editBtn').addEventListener('click', () => {
-    const on = document.body.classList.toggle('editing');
-    $('#editBtn').setAttribute('aria-pressed', on);
-    $('#editBtn').textContent = on ? '✓ Done' : '✎ Edit';
+    if (document.body.classList.contains('editing')) return setAdmin(false);
+    $('#loginForm').reset();
+    $('#loginErr').textContent = '';
+    $('#loginDlg').showModal();
   });
+  $('#loginCancel').addEventListener('click', () => $('#loginDlg').close());
+  $('#loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    password = e.target.password.value;
+    try {
+      await api('POST', '/api/login');
+      setPw(password);
+      $('#loginDlg').close();
+      setAdmin(true);
+    } catch (err) {
+      password = '';
+      $('#loginErr').textContent = err.status ? err.message : 'Cannot reach the server.';
+    }
+  });
+
   $('#addBtn').addEventListener('click', () => openDialog(null));
   $('#resetBtn').addEventListener('click', () => {
-    if (confirm('Reset the app list to the defaults? Your changes in this browser will be lost.')) {
-      apps = structuredClone(SAMPLE);
-      drop(STORE_KEY);
-      render();
-    }
+    if (confirm('Reset the app list to the defaults for everyone?')) persist(null);
   });
 
   const savedTheme = load(THEME_KEY);
@@ -352,7 +413,9 @@
   });
 
   $('#year').textContent = new Date().getFullYear();
+  if (password) setAdmin(true);
   render();
+  loadApps();
 </script>
 </body>
 </html>
