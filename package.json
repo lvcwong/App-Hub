@@ -1,0 +1,15 @@
+{
+  "name": "lvc-app-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LVC EcoPack App Hub - static launcher for our Railway apps",
+  "scripts": {
+    "start": "serve . --no-clipboard -l tcp://0.0.0.0:${PORT:-3000}"
+  },
+  "dependencies": {
+    "serve": "14.2.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
